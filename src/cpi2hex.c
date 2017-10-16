@@ -74,6 +74,7 @@ struct
 {
 	unsigned int info : 1;
 	unsigned int debug : 1;
+	unsigned int binary : 1;
 	short codepage;
 	int range[20][2];
 	int num_ranges;
@@ -93,6 +94,7 @@ int main(int argc, char *argv[])
 			"Options:\n"
 			"\t-i\t\tList information only, don't output to file\n"
 			"\t-o <name>\tSpecify an output file name (font.h by default)\n"
+			"\t-b\t\tOutput data as a raw binary files (-o option will be ignored)\n"
 			"\t-c <number>\tSpecify the code page to extract\n"
 			"\t-r <range>\tSpecify a range of characters to extract. Multiple\n"
 			"\t\t\tranges can be specified seprated by commas eg: -r 32-167,57,2-4\n"
@@ -117,6 +119,9 @@ int main(int argc, char *argv[])
 					exit(1);
 				}
 				strcpy(outfile, argv[++n]);
+				break;
+			case 'b':
+				options.binary = 1;
 				break;
 			case 'i':
 				options.info = 1;
@@ -234,8 +239,9 @@ int main(int argc, char *argv[])
 	if(options.debug)
 		printf("== FontInfoHeader ==\n%i\n\n", FontInfoHeader.num_codepages);
 
-	if(!options.info)
+	if(!options.debug && !options.binary)
 		remove(outfile);
+
 	for (int cp = 0; cp < FontInfoHeader.num_codepages; ++cp)
 	{
 		long cpeh_start = ftell(fp); // Store CodePageEntryHeader start for FONT.NT files
@@ -306,41 +312,65 @@ int main(int argc, char *argv[])
 			{
 				data = (unsigned char *)malloc(sizeof(unsigned char) * offset);
 				fread(data, 1, offset, fp);
-				out = fopen(outfile, "a");
-				if (out == NULL)
+				if (options.binary)
 				{
-					printf("Error: Could not open output file %s\n", outfile);
-					exit(1);
-				}
-				int count = 0;
-				for (int num = 0; num < options.num_ranges; ++num)
-				{
-					 count += (options.range[num][1] + 1) - options.range[num][0];
-				}
-				int bytes = (ScreenFontHeader.height * count);
-				fprintf(out, "const unsigned char CP%i_%ix%i__1bpp[%i] = {\n", CodePageEntryHeader.codepage, ScreenFontHeader.width, ScreenFontHeader.height, bytes);
-				for (int num = 0; num < options.num_ranges; ++num)
-				{
-					int col = 0;
-					for (int r = options.range[num][0]; r < (options.range[num][1] + 1); ++r)
+					sprintf(outfile, "CP%i_%ix%i__1bpp.bin", CodePageEntryHeader.codepage, ScreenFontHeader.width, ScreenFontHeader.height);
+					out = fopen(outfile, "wb");
+					if (out == NULL)
 					{
-						int start = r * ScreenFontHeader.height;
-						int end = start + ScreenFontHeader.height;
-						for (int i = start; i < end; ++i)
+						printf("Error: Could not open output file %s\n", outfile);
+						exit(1);
+					}
+					for (int num = 0; num < options.num_ranges; ++num)
+					{
+						for (int r = options.range[num][0]; r < (options.range[num][1] + 1); ++r)
 						{
-							if (r == options.range[num][1] && i == (end - 1) && num == (options.num_ranges - 1))
-								fprintf(out, "0x%02X};\n", data[i]);
-							else
-								fprintf(out, "0x%02X,", data[i]);
-							if (++col == ScreenFontHeader.height)
+							int start = r * ScreenFontHeader.height;
+							int end = start + ScreenFontHeader.height;
+							for (int i = start; i < end; ++i)
+								fwrite(&data[i], 1, 1, out);
+						}
+					}
+					fclose(out);
+				}
+				else
+				{
+					out = fopen(outfile, "a");
+					if (out == NULL)
+					{
+						printf("Error: Could not open output file %s\n", outfile);
+						exit(1);
+					}
+					int count = 0;
+					for (int num = 0; num < options.num_ranges; ++num)
+					{
+						count += (options.range[num][1] + 1) - options.range[num][0];
+					}
+					int bytes = (ScreenFontHeader.height * count);
+					fprintf(out, "const unsigned char CP%i_%ix%i__1bpp[%i] = {\n", CodePageEntryHeader.codepage, ScreenFontHeader.width, ScreenFontHeader.height, bytes);
+					for (int num = 0; num < options.num_ranges; ++num)
+					{
+						int col = 0;
+						for (int r = options.range[num][0]; r < (options.range[num][1] + 1); ++r)
+						{
+							int start = r * ScreenFontHeader.height;
+							int end = start + ScreenFontHeader.height;
+							for (int i = start; i < end; ++i)
 							{
-								fprintf(out, "\n");
-								col = 0;
+								if (r == options.range[num][1] && i == (end - 1) && num == (options.num_ranges - 1))
+									fprintf(out, "0x%02X};\n", data[i]);
+								else
+									fprintf(out, "0x%02X,", data[i]);
+								if (++col == ScreenFontHeader.height)
+								{
+									fprintf(out, "\n");
+									col = 0;
+								}
 							}
 						}
 					}
+					fclose(out);
 				}
-				fclose(out);
 				free(data);
 			}
 			else
@@ -363,42 +393,70 @@ int main(int argc, char *argv[])
 
 			fread(&CharacterIndexTable.FontIndex, 2, 256, fp);
 
-			out = fopen(outfile, "a");
-			if (out == NULL)
+			if (options.binary)
 			{
-				printf("Error: Could not open output file %s\n", outfile);
-				exit(1);
-			}
-			for (int num_fonts = 0; num_fonts < DRDOSExtendedFontFileHeader.num_fonts_per_codepage; ++num_fonts)
-			{
-				int count = 0;
-				for (int num = 0; num < options.num_ranges; ++num)
+				for (int num_fonts = 0; num_fonts < DRDOSExtendedFontFileHeader.num_fonts_per_codepage; ++num_fonts)
 				{
-					count += (options.range[num][1] + 1) - options.range[num][0];
-				}
-				int bytes = (DRDOSExtendedFontFileHeader.font_cellsize[num_fonts] * count);
-				fprintf(out, "const unsigned char CP%i_8x%i__1bpp[%i] = {\n", CodePageEntryHeader.codepage, DRDOSExtendedFontFileHeader.font_cellsize[num_fonts], bytes);
-				for (int num=0; num < options.num_ranges; ++num)
-				{
-					for (int i = options.range[num][0]; i < (options.range[num][1] + 1); ++i)
+					sprintf(outfile, "CP%i_8x%i__1bpp", CodePageEntryHeader.codepage, DRDOSExtendedFontFileHeader.font_cellsize[num_fonts]);
+					out = fopen(outfile, "wb");
+					if (out == NULL)
 					{
-						long bitmap_offset = (CharacterIndexTable.FontIndex[i] * DRDOSExtendedFontFileHeader.font_cellsize[num_fonts]) + DRDOSExtendedFontFileHeader.dfd_offset[num_fonts];
-						fseek(fp, bitmap_offset, SEEK_SET);
-						fread(&buf, 1, DRDOSExtendedFontFileHeader.font_cellsize[num_fonts], fp);
-						for (int height = 0; height < DRDOSExtendedFontFileHeader.font_cellsize[num_fonts]; ++height)
+						printf("Error: Could not open output file %s\n", outfile);
+						exit(1);
+					}
+					for (int num = 0; num < options.num_ranges; ++num)
+					{
+						for (int i = options.range[num][0]; i < (options.range[num][1] + 1); ++i)
 						{
-							fprintf(out, "0x%02X", buf[height]);
-							if (height < (DRDOSExtendedFontFileHeader.font_cellsize[num_fonts] - 1))
-								fprintf(out, ",");
+							long bitmap_offset = (CharacterIndexTable.FontIndex[i] * DRDOSExtendedFontFileHeader.font_cellsize[num_fonts]) + DRDOSExtendedFontFileHeader.dfd_offset[num_fonts];
+							fseek(fp, bitmap_offset, SEEK_SET);
+							fread(&buf, 1, DRDOSExtendedFontFileHeader.font_cellsize[num_fonts], fp);
+							for (int height = 0; height < DRDOSExtendedFontFileHeader.font_cellsize[num_fonts]; ++height)
+								fwrite(&buf[height], 1, 1, out);
 						}
-						if (i == options.range[num][1] && num == (options.num_ranges - 1))
-							fprintf(out, "};\n\n");
-						else
-							fprintf(out, ",\n");
+					}
+					fclose(out);
+				}
+			}
+			else
+			{
+				out = fopen(outfile, "a");
+				if (out == NULL)
+				{
+					printf("Error: Could not open output file %s\n", outfile);
+					exit(1);
+				}
+				for (int num_fonts = 0; num_fonts < DRDOSExtendedFontFileHeader.num_fonts_per_codepage; ++num_fonts)
+				{
+					int count = 0;
+					for (int num = 0; num < options.num_ranges; ++num)
+					{
+						count += (options.range[num][1] + 1) - options.range[num][0];
+					}
+					int bytes = (DRDOSExtendedFontFileHeader.font_cellsize[num_fonts] * count);
+					fprintf(out, "const unsigned char CP%i_8x%i__1bpp[%i] = {\n", CodePageEntryHeader.codepage, DRDOSExtendedFontFileHeader.font_cellsize[num_fonts], bytes);
+					for (int num = 0; num < options.num_ranges; ++num)
+					{
+						for (int i = options.range[num][0]; i < (options.range[num][1] + 1); ++i)
+						{
+							long bitmap_offset = (CharacterIndexTable.FontIndex[i] * DRDOSExtendedFontFileHeader.font_cellsize[num_fonts]) + DRDOSExtendedFontFileHeader.dfd_offset[num_fonts];
+							fseek(fp, bitmap_offset, SEEK_SET);
+							fread(&buf, 1, DRDOSExtendedFontFileHeader.font_cellsize[num_fonts], fp);
+							for (int height = 0; height < DRDOSExtendedFontFileHeader.font_cellsize[num_fonts]; ++height)
+							{
+								fprintf(out, "0x%02X", buf[height]);
+								if (height < (DRDOSExtendedFontFileHeader.font_cellsize[num_fonts] - 1))
+									fprintf(out, ",");
+							}
+							if (i == options.range[num][1] && num == (options.num_ranges - 1))
+								fprintf(out, "};\n\n");
+							else
+								fprintf(out, ",\n");
+						}
 					}
 				}
+				fclose(out);
 			}
-			fclose(out);
 		}
 
 		if (strncmp(FontFileHeader.id, "FONT.NT", 7) == 0)
